@@ -3,12 +3,11 @@
 SSH-managed Linux containers on Proxmox. No signup. Your SSH key is your identity.
 
 ```
-  _____  _____   ______   ______   ______   __
- |  __ \|  __ \ / __ \ \ / /  _ \ / __ \ \ / /
- | |__) | |__) | |  | \ V /| |_) | |  | \ V / 
- |  ___/|  _  /| |  | |> < |  _ <| |  | |> <  
- | |    | | \ \| |__| / . \| |_) | |__| / . \ 
- |_|    |_|  \_\\____/_/ \_\____/ \____/_/ \_\
+  ____  ____   _____  ______   _____  __ __  
+ |  _ \|  _ \ / _ \ \/ / __ ) / _ \ \/ / \ \ 
+ | |_) | |_) | | | \  /|  _ \| | | \  /   \ \
+ |  __/|  _ <| |_| /  \| |_) | |_| /  \   / /
+ |_|   |_| \_\\___/_/\_\____/ \___/_/\_\ /_/ 
 ```
 
 Proxbox is a [shellbox.dev](https://shellbox.dev)-like service backed by Proxmox VE. Users create and manage LXC containers entirely through SSH commands. Containers automatically pause on disconnect and resume on reconnect.
