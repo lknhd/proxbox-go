@@ -1,0 +1,7 @@
+proxbox-go
+*.db
+ssh_host_key
+ssh_host_key.pub
+ssh_gateway_key
+ssh_gateway_key.pub
+config.yaml

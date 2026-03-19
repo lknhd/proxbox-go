@@ -1,0 +1,19 @@
+proxmox:
+  host: "192.168.1.100"
+  user: "root@pam"
+  token_name: "proxbox"
+  token_value: "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+  node: "pve"
+  verify_ssl: false
+  storage: "local-lvm"
+  template: "local:vztmpl/ubuntu-24.04-standard_24.04-1_amd64.tar.zst"
+  bridge: "vmbr0"
+  vmid_start: 5000
+  vmid_end: 5999
+
+gateway:
+  host: ""
+  port: 2222
+  host_key_path: "./ssh_host_key"
+  gateway_key_path: "./ssh_gateway_key"
+  db_path: "./proxbox.db"
