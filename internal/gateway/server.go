@@ -15,9 +15,10 @@ import (
 )
 
 type ptyRequest struct {
-	Term string
-	Cols int
-	Rows int
+	Term  string
+	Cols  int
+	Rows  int
+	Modes ssh.TerminalModes
 }
 
 type Server struct {
@@ -211,18 +212,39 @@ func (s *Server) handleSession(channel ssh.Channel, reqs <-chan *ssh.Request, us
 
 func parsePTYRequest(payload []byte) *ptyRequest {
 	if len(payload) < 4 {
-		return &ptyRequest{Term: "xterm-256color", Cols: 80, Rows: 24}
+		return &ptyRequest{Term: "xterm-256color", Cols: 80, Rows: 24, Modes: ssh.TerminalModes{}}
 	}
 
 	termLen := binary.BigEndian.Uint32(payload[:4])
 	if len(payload) < int(4+termLen+8) {
-		return &ptyRequest{Term: "xterm-256color", Cols: 80, Rows: 24}
+		return &ptyRequest{Term: "xterm-256color", Cols: 80, Rows: 24, Modes: ssh.TerminalModes{}}
 	}
 
 	term := string(payload[4 : 4+termLen])
 	offset := 4 + termLen
 	cols := int(binary.BigEndian.Uint32(payload[offset : offset+4]))
 	rows := int(binary.BigEndian.Uint32(payload[offset+4 : offset+8]))
+	offset += 16 // skip cols, rows, pixel_width, pixel_height
 
-	return &ptyRequest{Term: term, Cols: cols, Rows: rows}
+	// Parse terminal modes
+	modes := ssh.TerminalModes{}
+	if int(offset+4) <= len(payload) {
+		modesLen := binary.BigEndian.Uint32(payload[offset : offset+4])
+		offset += 4
+		modesData := payload[offset:]
+		if uint32(len(modesData)) >= modesLen {
+			modesData = modesData[:modesLen]
+		}
+		for len(modesData) >= 5 {
+			opcode := modesData[0]
+			if opcode == 0 || opcode >= 160 { // TTY_OP_END or invalid
+				break
+			}
+			value := binary.BigEndian.Uint32(modesData[1:5])
+			modes[opcode] = value
+			modesData = modesData[5:]
+		}
+	}
+
+	return &ptyRequest{Term: term, Cols: cols, Rows: rows, Modes: modes}
 }

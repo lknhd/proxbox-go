@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"encoding/binary"
 	"fmt"
 	"io"
 	"log"
@@ -89,14 +90,20 @@ func (p *Proxy) Connect(sess ssh.Channel, reqs <-chan *ssh.Request, user *models
 	}
 	defer containerSess.Close()
 
-	// Request PTY on the container
+	// Request PTY on the container with forwarded terminal modes
 	if ptyReq != nil {
-		if err := containerSess.RequestPty(ptyReq.Term, ptyReq.Rows, ptyReq.Cols, ssh.TerminalModes{}); err != nil {
+		if err := containerSess.RequestPty(ptyReq.Term, ptyReq.Rows, ptyReq.Cols, ptyReq.Modes); err != nil {
 			fmt.Fprintf(sess, "Failed to request PTY: %v\r\n", err)
 			return
 		}
 	} else {
-		if err := containerSess.RequestPty("xterm-256color", 24, 80, ssh.TerminalModes{}); err != nil {
+		if err := containerSess.RequestPty("xterm-256color", 24, 80, ssh.TerminalModes{
+			ssh.ECHO:    1,
+			ssh.ISIG:    1,
+			ssh.ICANON:  1,
+			ssh.OPOST:   1,
+			ssh.ONLCR:   1,
+		}); err != nil {
 			fmt.Fprintf(sess, "Failed to request PTY: %v\r\n", err)
 			return
 		}
@@ -151,7 +158,7 @@ func (p *Proxy) Connect(sess ssh.Channel, reqs <-chan *ssh.Request, user *models
 		io.Copy(sess, containerStderr)
 	}()
 
-	// Handle incoming requests (window-change, etc.)
+	// Handle incoming requests (window-change, signals, etc.)
 	go func() {
 		for req := range reqs {
 			switch req.Type {
@@ -160,6 +167,18 @@ func (p *Proxy) Connect(sess ssh.Channel, reqs <-chan *ssh.Request, user *models
 					cols := int(req.Payload[0])<<24 | int(req.Payload[1])<<16 | int(req.Payload[2])<<8 | int(req.Payload[3])
 					rows := int(req.Payload[4])<<24 | int(req.Payload[5])<<16 | int(req.Payload[6])<<8 | int(req.Payload[7])
 					containerSess.WindowChange(rows, cols)
+				}
+				if req.WantReply {
+					req.Reply(true, nil)
+				}
+			case "signal":
+				// Forward signal requests to the container session
+				if len(req.Payload) >= 4 {
+					sigLen := binary.BigEndian.Uint32(req.Payload[:4])
+					if len(req.Payload) >= int(4+sigLen) {
+						sigName := string(req.Payload[4 : 4+sigLen])
+						containerSess.Signal(ssh.Signal(sigName))
+					}
 				}
 				if req.WantReply {
 					req.Reply(true, nil)
