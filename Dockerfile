@@ -8,7 +8,7 @@ RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o proxbox-go .
 
 FROM alpine:3.20
 
-RUN apk add --no-cache ca-certificates tzdata
+RUN apk add --no-cache ca-certificates tzdata openssh-client
 
 WORKDIR /app
 COPY --from=builder /build/proxbox-go .

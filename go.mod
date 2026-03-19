@@ -3,6 +3,7 @@ module github.com/lknhd/proxbox-go
 go 1.25.0
 
 require (
+	github.com/creack/pty v1.1.24
 	github.com/gliderlabs/ssh v0.3.8
 	golang.org/x/crypto v0.49.0
 	gopkg.in/yaml.v3 v3.0.1

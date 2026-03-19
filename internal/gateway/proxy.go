@@ -4,37 +4,31 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"os"
+	"os/exec"
 	"sync"
 	"time"
 
+	"github.com/creack/pty"
 	"github.com/lknhd/proxbox-go/internal/container"
 	"github.com/lknhd/proxbox-go/internal/models"
 
 	gssh "github.com/gliderlabs/ssh"
-	cryptossh "golang.org/x/crypto/ssh"
 )
 
 type Proxy struct {
-	manager    *container.Manager
-	gatewayKey cryptossh.Signer
+	manager        *container.Manager
+	gatewayKeyPath string
 }
 
 func NewProxy(manager *container.Manager, gatewayKeyPath string) (*Proxy, error) {
-	keyData, err := os.ReadFile(gatewayKeyPath)
-	if err != nil {
-		return nil, fmt.Errorf("read gateway key: %w", err)
-	}
-
-	signer, err := cryptossh.ParsePrivateKey(keyData)
-	if err != nil {
-		return nil, fmt.Errorf("parse gateway key: %w", err)
+	if _, err := os.Stat(gatewayKeyPath); err != nil {
+		return nil, fmt.Errorf("gateway key not found: %w", err)
 	}
 
 	return &Proxy{
-		manager:    manager,
-		gatewayKey: signer,
+		manager:        manager,
+		gatewayKeyPath: gatewayKeyPath,
 	}, nil
 }
 
@@ -62,134 +56,76 @@ func (p *Proxy) Connect(sess gssh.Session, user *models.User, ct *models.Contain
 
 	fmt.Fprintf(sess, "Connecting to %s (%s)...\r\n", ct.Name, ct.IPAddress)
 
-	// Retry SSH connection to container
-	var client *cryptossh.Client
-	for attempt := 0; attempt < 10; attempt++ {
-		clientCfg := &cryptossh.ClientConfig{
-			User:            "root",
-			Auth:            []cryptossh.AuthMethod{cryptossh.PublicKeys(p.gatewayKey)},
-			HostKeyCallback: cryptossh.InsecureIgnoreHostKey(),
-			Timeout:         10 * time.Second,
-		}
-
-		client, err = cryptossh.Dial("tcp", net.JoinHostPort(ct.IPAddress, "22"), clientCfg)
-		if err == nil {
-			break
-		}
-		if attempt == 9 {
-			fmt.Fprintf(sess, "Failed to connect to container: %v\r\n", err)
-			sess.Exit(1)
-			return
-		}
-		time.Sleep(2 * time.Second)
-	}
-	defer client.Close()
-
-	// Open session on the container
-	containerSess, err := client.NewSession()
-	if err != nil {
-		fmt.Fprintf(sess, "Failed to open session: %v\r\n", err)
+	// Wait for container SSH to be ready
+	if err := p.waitForSSH(ct.IPAddress, 10); err != nil {
+		fmt.Fprintf(sess, "Failed to connect to container: %v\r\n", err)
 		sess.Exit(1)
 		return
 	}
-	defer containerSess.Close()
 
-	// Request PTY on the container, forwarding client's PTY settings
+	// Build native ssh command
+	cmd := exec.Command("ssh",
+		"-tt",
+		"-o", "StrictHostKeyChecking=no",
+		"-o", "UserKnownHostsFile=/dev/null",
+		"-o", "LogLevel=ERROR",
+		"-o", "ConnectTimeout=10",
+		"-i", p.gatewayKeyPath,
+		fmt.Sprintf("root@%s", ct.IPAddress),
+	)
+
+	// Get initial PTY size from client
 	ptyReq, winCh, isPty := sess.Pty()
+
+	var initialSize *pty.Winsize
 	if isPty {
-		if err := containerSess.RequestPty(ptyReq.Term, ptyReq.Window.Height, ptyReq.Window.Width, cryptossh.TerminalModes{}); err != nil {
-			fmt.Fprintf(sess, "Failed to request PTY: %v\r\n", err)
-			sess.Exit(1)
-			return
+		initialSize = &pty.Winsize{
+			Cols: uint16(ptyReq.Window.Width),
+			Rows: uint16(ptyReq.Window.Height),
 		}
 	} else {
-		// Fallback: request a default PTY
-		if err := containerSess.RequestPty("xterm-256color", 24, 80, cryptossh.TerminalModes{
-			cryptossh.ECHO:   1,
-			cryptossh.ISIG:   1,
-			cryptossh.ICANON: 1,
-			cryptossh.OPOST:  1,
-			cryptossh.ONLCR:  1,
-		}); err != nil {
-			fmt.Fprintf(sess, "Failed to request PTY: %v\r\n", err)
-			sess.Exit(1)
-			return
-		}
+		initialSize = &pty.Winsize{Cols: 80, Rows: 24}
 	}
 
-	// Get pipes
-	containerStdin, err := containerSess.StdinPipe()
+	// Start command with PTY
+	ptmx, err := pty.StartWithSize(cmd, initialSize)
 	if err != nil {
-		fmt.Fprintf(sess, "Failed to pipe stdin: %v\r\n", err)
+		fmt.Fprintf(sess, "Failed to start SSH: %v\r\n", err)
 		sess.Exit(1)
 		return
 	}
-
-	containerStdout, err := containerSess.StdoutPipe()
-	if err != nil {
-		fmt.Fprintf(sess, "Failed to pipe stdout: %v\r\n", err)
-		sess.Exit(1)
-		return
-	}
-
-	containerStderr, err := containerSess.StderrPipe()
-	if err != nil {
-		fmt.Fprintf(sess, "Failed to pipe stderr: %v\r\n", err)
-		sess.Exit(1)
-		return
-	}
-
-	// Start shell
-	if err := containerSess.Shell(); err != nil {
-		fmt.Fprintf(sess, "Failed to start shell: %v\r\n", err)
-		sess.Exit(1)
-		return
-	}
+	defer ptmx.Close()
 
 	var wg sync.WaitGroup
 
-	// Forward client -> container (stdin)
+	// Forward client -> PTY (stdin)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		io.Copy(containerStdin, sess)
-		containerStdin.Close()
+		io.Copy(ptmx, sess)
 	}()
 
-	// Forward container stdout -> client
+	// Forward PTY -> client (stdout)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		io.Copy(sess, containerStdout)
-	}()
-
-	// Forward container stderr -> client
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		io.Copy(sess, containerStderr)
+		io.Copy(sess, ptmx)
 	}()
 
 	// Forward window-change events
 	if isPty {
 		go func() {
 			for win := range winCh {
-				containerSess.WindowChange(win.Height, win.Width)
+				pty.Setsize(ptmx, &pty.Winsize{
+					Cols: uint16(win.Width),
+					Rows: uint16(win.Height),
+				})
 			}
 		}()
 	}
 
-	// Forward signals from client to container
-	sigCh := make(chan gssh.Signal, 3)
-	sess.Signals(sigCh)
-	go func() {
-		for sig := range sigCh {
-			containerSess.Signal(cryptossh.Signal(sig))
-		}
-	}()
-
-	// Wait for container session to end
-	containerSess.Wait()
+	// Wait for SSH command to finish
+	cmd.Wait()
 	wg.Wait()
 
 	// Pause on disconnect
@@ -200,4 +136,26 @@ func (p *Proxy) Connect(sess gssh.Session, user *models.User, ct *models.Contain
 	}
 
 	sess.Exit(0)
+}
+
+// waitForSSH polls the container's SSH port until it's reachable.
+func (p *Proxy) waitForSSH(ip string, maxAttempts int) error {
+	for i := 0; i < maxAttempts; i++ {
+		cmd := exec.Command("ssh",
+			"-o", "StrictHostKeyChecking=no",
+			"-o", "UserKnownHostsFile=/dev/null",
+			"-o", "LogLevel=ERROR",
+			"-o", "ConnectTimeout=2",
+			"-i", p.gatewayKeyPath,
+			fmt.Sprintf("root@%s", ip),
+			"true",
+		)
+		if err := cmd.Run(); err == nil {
+			return nil
+		}
+		if i < maxAttempts-1 {
+			time.Sleep(2 * time.Second)
+		}
+	}
+	return fmt.Errorf("SSH not ready after %d attempts", maxAttempts)
 }
