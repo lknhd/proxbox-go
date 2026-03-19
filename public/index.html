@@ -409,18 +409,18 @@
 <div class="section">
   <div class="section-title">How It Works</div>
   <div class="cmd-block">
-    <span class="output">
-┌──────────┐    SSH    ┌──────────────┐   Proxmox API   ┌──────────┐<br>
-│  You     │ ───────── │  Proxbox     │ ─────────────── │  Proxmox │<br>
-│  (SSH)   │  :2222    │  Gateway     │                 │  VE      │<br>
-└──────────┘           └──────┬───────┘                 └────┬─────┘<br>
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;│ SSH :22                     │<br>
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;▼                           │<br>
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;┌──────────────┐                │<br>
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;│  LXC         │ ◄──────────────┘<br>
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;│  Container   │<br>
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;└──────────────┘<br>
-    </span>
+<pre class="output" style="margin:0;font-family:inherit;font-size:inherit;line-height:1.4;">
+┌──────────┐    SSH    ┌──────────────┐   Proxmox API   ┌──────────┐
+│  You     │ ───────── │  Proxbox     │ ─────────────── │  Proxmox │
+│  (SSH)   │  :2222    │  Gateway     │                 │  VE      │
+└──────────┘           └──────┬───────┘                 └────┬─────┘
+                              │ SSH :22                      │
+                              ▼                              │
+                       ┌──────────────┐                      │
+                       │  LXC         │ ◄────────────────────┘
+                       │  Container   │
+                       └──────────────┘
+</pre>
   </div>
 </div>
 
