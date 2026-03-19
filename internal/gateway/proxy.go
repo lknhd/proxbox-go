@@ -1,7 +1,6 @@
 package gateway
 
 import (
-	"encoding/binary"
 	"fmt"
 	"io"
 	"log"
@@ -13,12 +12,13 @@ import (
 	"github.com/lknhd/proxbox-go/internal/container"
 	"github.com/lknhd/proxbox-go/internal/models"
 
-	"golang.org/x/crypto/ssh"
+	gssh "github.com/gliderlabs/ssh"
+	cryptossh "golang.org/x/crypto/ssh"
 )
 
 type Proxy struct {
 	manager    *container.Manager
-	gatewayKey ssh.Signer
+	gatewayKey cryptossh.Signer
 }
 
 func NewProxy(manager *container.Manager, gatewayKeyPath string) (*Proxy, error) {
@@ -27,7 +27,7 @@ func NewProxy(manager *container.Manager, gatewayKeyPath string) (*Proxy, error)
 		return nil, fmt.Errorf("read gateway key: %w", err)
 	}
 
-	signer, err := ssh.ParsePrivateKey(keyData)
+	signer, err := cryptossh.ParsePrivateKey(keyData)
 	if err != nil {
 		return nil, fmt.Errorf("parse gateway key: %w", err)
 	}
@@ -38,7 +38,7 @@ func NewProxy(manager *container.Manager, gatewayKeyPath string) (*Proxy, error)
 	}, nil
 }
 
-func (p *Proxy) Connect(sess ssh.Channel, reqs <-chan *ssh.Request, user *models.User, ct *models.Container, ptyReq *ptyRequest) {
+func (p *Proxy) Connect(sess gssh.Session, user *models.User, ct *models.Container) {
 	// Auto-start or resume
 	var err error
 	if ct.Status == "paused" {
@@ -50,32 +50,35 @@ func (p *Proxy) Connect(sess ssh.Channel, reqs <-chan *ssh.Request, user *models
 	}
 	if err != nil {
 		fmt.Fprintf(sess, "Error: %v\r\n", err)
+		sess.Exit(1)
 		return
 	}
 
 	if ct.IPAddress == "" {
 		fmt.Fprintf(sess, "Error: Container has no IP address.\r\n")
+		sess.Exit(1)
 		return
 	}
 
 	fmt.Fprintf(sess, "Connecting to %s (%s)...\r\n", ct.Name, ct.IPAddress)
 
 	// Retry SSH connection to container
-	var client *ssh.Client
+	var client *cryptossh.Client
 	for attempt := 0; attempt < 10; attempt++ {
-		clientCfg := &ssh.ClientConfig{
+		clientCfg := &cryptossh.ClientConfig{
 			User:            "root",
-			Auth:            []ssh.AuthMethod{ssh.PublicKeys(p.gatewayKey)},
-			HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+			Auth:            []cryptossh.AuthMethod{cryptossh.PublicKeys(p.gatewayKey)},
+			HostKeyCallback: cryptossh.InsecureIgnoreHostKey(),
 			Timeout:         10 * time.Second,
 		}
 
-		client, err = ssh.Dial("tcp", net.JoinHostPort(ct.IPAddress, "22"), clientCfg)
+		client, err = cryptossh.Dial("tcp", net.JoinHostPort(ct.IPAddress, "22"), clientCfg)
 		if err == nil {
 			break
 		}
 		if attempt == 9 {
 			fmt.Fprintf(sess, "Failed to connect to container: %v\r\n", err)
+			sess.Exit(1)
 			return
 		}
 		time.Sleep(2 * time.Second)
@@ -86,25 +89,30 @@ func (p *Proxy) Connect(sess ssh.Channel, reqs <-chan *ssh.Request, user *models
 	containerSess, err := client.NewSession()
 	if err != nil {
 		fmt.Fprintf(sess, "Failed to open session: %v\r\n", err)
+		sess.Exit(1)
 		return
 	}
 	defer containerSess.Close()
 
-	// Request PTY on the container with forwarded terminal modes
-	if ptyReq != nil {
-		if err := containerSess.RequestPty(ptyReq.Term, ptyReq.Rows, ptyReq.Cols, ptyReq.Modes); err != nil {
+	// Request PTY on the container, forwarding client's PTY settings
+	ptyReq, winCh, isPty := sess.Pty()
+	if isPty {
+		if err := containerSess.RequestPty(ptyReq.Term, ptyReq.Window.Height, ptyReq.Window.Width, cryptossh.TerminalModes{}); err != nil {
 			fmt.Fprintf(sess, "Failed to request PTY: %v\r\n", err)
+			sess.Exit(1)
 			return
 		}
 	} else {
-		if err := containerSess.RequestPty("xterm-256color", 24, 80, ssh.TerminalModes{
-			ssh.ECHO:    1,
-			ssh.ISIG:    1,
-			ssh.ICANON:  1,
-			ssh.OPOST:   1,
-			ssh.ONLCR:   1,
+		// Fallback: request a default PTY
+		if err := containerSess.RequestPty("xterm-256color", 24, 80, cryptossh.TerminalModes{
+			cryptossh.ECHO:   1,
+			cryptossh.ISIG:   1,
+			cryptossh.ICANON: 1,
+			cryptossh.OPOST:  1,
+			cryptossh.ONLCR:  1,
 		}); err != nil {
 			fmt.Fprintf(sess, "Failed to request PTY: %v\r\n", err)
+			sess.Exit(1)
 			return
 		}
 	}
@@ -113,30 +121,34 @@ func (p *Proxy) Connect(sess ssh.Channel, reqs <-chan *ssh.Request, user *models
 	containerStdin, err := containerSess.StdinPipe()
 	if err != nil {
 		fmt.Fprintf(sess, "Failed to pipe stdin: %v\r\n", err)
+		sess.Exit(1)
 		return
 	}
 
 	containerStdout, err := containerSess.StdoutPipe()
 	if err != nil {
 		fmt.Fprintf(sess, "Failed to pipe stdout: %v\r\n", err)
+		sess.Exit(1)
 		return
 	}
 
 	containerStderr, err := containerSess.StderrPipe()
 	if err != nil {
 		fmt.Fprintf(sess, "Failed to pipe stderr: %v\r\n", err)
+		sess.Exit(1)
 		return
 	}
 
 	// Start shell
 	if err := containerSess.Shell(); err != nil {
 		fmt.Fprintf(sess, "Failed to start shell: %v\r\n", err)
+		sess.Exit(1)
 		return
 	}
 
 	var wg sync.WaitGroup
 
-	// Forward client -> container
+	// Forward client -> container (stdin)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -158,36 +170,21 @@ func (p *Proxy) Connect(sess ssh.Channel, reqs <-chan *ssh.Request, user *models
 		io.Copy(sess, containerStderr)
 	}()
 
-	// Handle incoming requests (window-change, signals, etc.)
-	go func() {
-		for req := range reqs {
-			switch req.Type {
-			case "window-change":
-				if len(req.Payload) >= 8 {
-					cols := int(req.Payload[0])<<24 | int(req.Payload[1])<<16 | int(req.Payload[2])<<8 | int(req.Payload[3])
-					rows := int(req.Payload[4])<<24 | int(req.Payload[5])<<16 | int(req.Payload[6])<<8 | int(req.Payload[7])
-					containerSess.WindowChange(rows, cols)
-				}
-				if req.WantReply {
-					req.Reply(true, nil)
-				}
-			case "signal":
-				// Forward signal requests to the container session
-				if len(req.Payload) >= 4 {
-					sigLen := binary.BigEndian.Uint32(req.Payload[:4])
-					if len(req.Payload) >= int(4+sigLen) {
-						sigName := string(req.Payload[4 : 4+sigLen])
-						containerSess.Signal(ssh.Signal(sigName))
-					}
-				}
-				if req.WantReply {
-					req.Reply(true, nil)
-				}
-			default:
-				if req.WantReply {
-					req.Reply(false, nil)
-				}
+	// Forward window-change events
+	if isPty {
+		go func() {
+			for win := range winCh {
+				containerSess.WindowChange(win.Height, win.Width)
 			}
+		}()
+	}
+
+	// Forward signals from client to container
+	sigCh := make(chan gssh.Signal, 3)
+	sess.Signals(sigCh)
+	go func() {
+		for sig := range sigCh {
+			containerSess.Signal(cryptossh.Signal(sig))
 		}
 	}()
 
@@ -201,4 +198,6 @@ func (p *Proxy) Connect(sess ssh.Channel, reqs <-chan *ssh.Request, user *models
 	} else {
 		log.Printf("Container '%s' paused on disconnect", ct.Name)
 	}
+
+	sess.Exit(0)
 }

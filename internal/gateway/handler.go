@@ -7,7 +7,7 @@ import (
 	"github.com/lknhd/proxbox-go/internal/container"
 	"github.com/lknhd/proxbox-go/internal/models"
 
-	"golang.org/x/crypto/ssh"
+	gssh "github.com/gliderlabs/ssh"
 )
 
 const banner = `
@@ -50,10 +50,12 @@ func NewHandler(manager *container.Manager, proxy *Proxy) *Handler {
 	return &Handler{manager: manager, proxy: proxy}
 }
 
-func (h *Handler) Handle(sess ssh.Channel, reqs <-chan *ssh.Request, user *models.User, command string, ptyReq *ptyRequest) {
+func (h *Handler) Handle(sess gssh.Session, user *models.User) {
+	command := sess.RawCommand()
+
 	if command == "" {
 		fmt.Fprint(sess, banner+helpText)
-		sess.Close()
+		sess.Exit(0)
 		return
 	}
 
@@ -74,23 +76,27 @@ func (h *Handler) Handle(sess ssh.Channel, reqs <-chan *ssh.Request, user *model
 	case "stop":
 		err = h.handleStop(sess, user, args)
 	case "ssh", "connect":
-		h.handleSSH(sess, reqs, user, args, ptyReq)
+		h.handleSSH(sess, user, args)
 		return
 	case "destroy", "rm":
 		err = h.handleDestroy(sess, user, args)
 	default:
 		fmt.Fprintf(sess, "Error: Unknown command: %s\n", cmd)
 		fmt.Fprint(sess, "Run 'help' to see available commands.\n")
+		sess.Exit(1)
+		return
 	}
 
 	if err != nil {
 		fmt.Fprintf(sess, "Error: %v\n", err)
+		sess.Exit(1)
+		return
 	}
 
-	sess.Close()
+	sess.Exit(0)
 }
 
-func (h *Handler) handleCreate(sess ssh.Channel, user *models.User, args []string) error {
+func (h *Handler) handleCreate(sess gssh.Session, user *models.User, args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("Usage: create <name> [small|medium|large]")
 	}
@@ -112,7 +118,7 @@ func (h *Handler) handleCreate(sess ssh.Channel, user *models.User, args []strin
 	return nil
 }
 
-func (h *Handler) handleList(sess ssh.Channel, user *models.User) error {
+func (h *Handler) handleList(sess gssh.Session, user *models.User) error {
 	containers, err := h.manager.List(user)
 	if err != nil {
 		return err
@@ -142,7 +148,7 @@ func (h *Handler) handleList(sess ssh.Channel, user *models.User) error {
 	return nil
 }
 
-func (h *Handler) handleStart(sess ssh.Channel, user *models.User, args []string) error {
+func (h *Handler) handleStart(sess gssh.Session, user *models.User, args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("Usage: start <name>")
 	}
@@ -162,7 +168,7 @@ func (h *Handler) handleStart(sess ssh.Channel, user *models.User, args []string
 	return nil
 }
 
-func (h *Handler) handleStop(sess ssh.Channel, user *models.User, args []string) error {
+func (h *Handler) handleStop(sess gssh.Session, user *models.User, args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("Usage: stop <name>")
 	}
@@ -177,10 +183,10 @@ func (h *Handler) handleStop(sess ssh.Channel, user *models.User, args []string)
 	return nil
 }
 
-func (h *Handler) handleSSH(sess ssh.Channel, reqs <-chan *ssh.Request, user *models.User, args []string, ptyReq *ptyRequest) {
+func (h *Handler) handleSSH(sess gssh.Session, user *models.User, args []string) {
 	if len(args) == 0 {
 		fmt.Fprint(sess, "Error: Usage: ssh <name>\n")
-		sess.Close()
+		sess.Exit(1)
 		return
 	}
 
@@ -188,21 +194,20 @@ func (h *Handler) handleSSH(sess ssh.Channel, reqs <-chan *ssh.Request, user *mo
 	ct, err := h.manager.Get(user, name)
 	if err != nil {
 		fmt.Fprintf(sess, "Error: %v\n", err)
-		sess.Close()
+		sess.Exit(1)
 		return
 	}
 	if ct == nil {
 		fmt.Fprintf(sess, "Error: Container '%s' not found\n", name)
-		sess.Close()
+		sess.Exit(1)
 		return
 	}
 
-	// Proxy handles the interactive session and closes the channel
-	h.proxy.Connect(sess, reqs, user, ct, ptyReq)
-	sess.Close()
+	// Proxy handles the interactive session
+	h.proxy.Connect(sess, user, ct)
 }
 
-func (h *Handler) handleDestroy(sess ssh.Channel, user *models.User, args []string) error {
+func (h *Handler) handleDestroy(sess gssh.Session, user *models.User, args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("Usage: destroy <name>")
 	}
