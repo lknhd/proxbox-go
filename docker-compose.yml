@@ -1,0 +1,25 @@
+services:
+  proxbox:
+    image: ghcr.io/lknhd/proxbox-go:main
+    restart: unless-stopped
+    ports:
+      - "2222:2222"
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./ssh_host_key:/app/ssh_host_key:ro
+      - ./ssh_gateway_key:/app/ssh_gateway_key:ro
+      - ./ssh_gateway_key.pub:/app/ssh_gateway_key.pub:ro
+      - proxbox-data:/app/data
+    environment:
+      - PROXBOX_CONFIG=/app/config.yaml
+
+  web:
+    image: nginx:alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./public:/usr/share/nginx/html:ro
+
+volumes:
+  proxbox-data:
